@@ -8,7 +8,7 @@ import os
 from PIL import Image
 import io
 import time
-from moviepy import VideoFileClip
+from moviepy.editor import VideoFileClip
 
 # --- 1. 页面基础配置 ---
 st.set_page_config(
@@ -347,4 +347,5 @@ elif "AUDIO" in mode:
     with col2:
         st.markdown("<h5>TEXT RESULT</h5>", unsafe_allow_html=True)
         if not a_file:
+
             st.info("WAITING FOR AUDIO...")
