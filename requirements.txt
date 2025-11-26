@@ -3,4 +3,5 @@ opencv-python-headless
 openai
 numpy
 pillow
+
 moviepy
