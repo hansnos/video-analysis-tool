@@ -3,5 +3,4 @@ opencv-python-headless
 openai
 numpy
 pillow
-
-moviepy
+moviepy==1.0.3
