@@ -174,26 +174,43 @@ def detect_scenes_ignore_subtitles(video_path, threshold=30.0):
     return frames, timestamps
 
 def analyze_image_reverse_engineering(image_base64):
+    """
+    图生文反推模式：升级版 System Prompt，追求 95% 还原度
+    """
     client = OpenAI(api_key=VISION_API_KEY, base_url=VISION_BASE_URL)
+    
+    # === 核心修改：赋予 AI 专家人设，要求极度精准的关键词 ===
     system_prompt = """
-    请分析图片，严格输出 JSON 格式（不要 Markdown）：
+    你是一位顶级的 AI 绘画提示词工程师（Prompt Engineer），精通 Midjourney、Stable Diffusion 和 Flux 的提示词逻辑。
+    请深度剖析这张图片，反推出能完美还原该画面的提示词。
+    
+    请严格按照以下 JSON 格式输出（不要 Markdown）：
     {
-        "style": "风格提示词...",
-        "shot": "镜头与景别...",
-        "prompt": "英文生成提示词..."
+        "style": "这里列出核心艺术风格。例如：Cyberpunk, Ukiyo-e, Oil Painting, 3D Render (Octane), Pixar Style, Matte Painting...",
+        "shot": "这里列出镜头与光影。例如：Wide angle, Telephoto lens, Dutch angle, Volumetric lighting, Rim light, Bokeh...",
+        "prompt": "这里编写一段高质量的英文 Prompt。必须包含：
+                   1. 主体细节（五官、衣着材质、表情）。
+                   2. 环境细节（背景元素、天气）。
+                   3. 技术参数（如：8k, photorealistic, masterpiece, highly detailed, unreal engine 5）。
+                   请使用逗号分隔的关键词形式。"
     }
     """
+    
     try:
         response = client.chat.completions.create(
             model=VISION_MODEL,
             messages=[
-                {"role": "user", "content": [{"type": "text", "text": system_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]}
-            ], max_tokens=800,
+                {"role": "user", "content": [
+                    {"type": "text", "text": system_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]}
+            ],
+            max_tokens=800,
         )
         content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
         return json.loads(content)
-    except:
-        return {"style": "Error", "shot": "Error", "prompt": "Error"}
+    except Exception as e:
+        return {"style": "Error", "shot": "Error", "prompt": str(e)}
 
 def analyze_video_frame_reconstruction(image_base64):
     """
@@ -428,3 +445,4 @@ with tab4:
                         <div class="card-content" style="white-space: pre-line; user-select: all;">{ocr_text}</div>
                     </div>
                     """, unsafe_allow_html=True)
+
