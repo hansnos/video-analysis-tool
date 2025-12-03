@@ -7,150 +7,195 @@ import tempfile
 import os
 from PIL import Image
 import io
-import time
+import json
+# 确保安装的是 moviepy==1.0.3
 from moviepy.editor import VideoFileClip
 
-# --- 1. 页面基础配置 ---
+# --- 1. 配置与密钥加载 ---
 st.set_page_config(
-    page_title="Video Analysis Platform", 
-    page_icon="⚡", 
-    layout="wide", 
-    initial_sidebar_state="expanded"
+    page_title="视听语言分析工作站", 
+    page_icon="🎬", 
+    layout="centered", 
+    initial_sidebar_state="collapsed"
 )
 
-# --- 2. 瑞士平面设计风格 (Swiss Style CSS) ---
-# 特点：高对比度、巨型字体、黑白分明、绝对清晰
+try:
+    VISION_API_KEY = st.secrets["vision"]["api_key"]
+    VISION_BASE_URL = st.secrets["vision"]["base_url"]
+    VISION_MODEL = st.secrets["vision"]["model"]
+    
+    AUDIO_API_KEY = st.secrets["audio"]["api_key"]
+    AUDIO_BASE_URL = st.secrets["audio"]["base_url"]
+    AUDIO_MODEL = st.secrets["audio"]["model"]
+except Exception as e:
+    st.error(f"⚠️ 配置缺失: {e}。请检查 secrets.toml")
+    st.stop()
+
+# --- 2. 顶级 UI 设计 (复刻参考图风格) ---
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Helvetica+Now+Display:wght@400;900&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap');
 
-    /* 全局重置 */
+    /* === 全局深色主题重置 === */
     .stApp {
-        background-color: #FFFFFF; /* 纯白背景 */
-        color: #000000; /* 纯黑文字 */
-        font-family: 'Helvetica Now Display', 'Arial', sans-serif;
+        background-color: #0B0E14; /* 深邃黑蓝背景 */
+        font-family: 'Noto Sans SC', sans-serif;
     }
-
-    /* 侧边栏：极简黑 */
-    [data-testid="stSidebar"] {
-        background-color: #F4F4F4;
-        border-right: 3px solid #000000;
-    }
-
-    /* 标题系统：巨型、加粗 */
-    h1 {
-        font-size: 4rem !important;
-        font-weight: 900 !important;
-        letter-spacing: -2px;
-        line-height: 1;
-        text-transform: uppercase;
-        margin-bottom: 20px;
-        color: #000000;
-    }
-    h5 {
-        font-size: 1.2rem !important;
-        font-weight: 900 !important;
-        text-transform: uppercase;
-        border-bottom: 3px solid #000000;
-        padding-bottom: 5px;
-        margin-top: 30px !important;
-        margin-bottom: 15px !important;
-        color: #000000 !important;
-    }
-
-    /* === 核心交互组件 === */
-
-    /* 1. 上传框 (File Uploader) - 绝对高亮 */
-    [data-testid='stFileUploader'] {
-        background-color: #FFF000; /* 亮黄色背景，绝对醒目 */
-        border: 4px solid #000000; /* 极粗黑边框 */
-        padding: 30px;
-        border-radius: 0px; /* 直角 */
-        text-align: center;
-    }
-    /* 强制上传框内的文字为纯黑粗体 */
-    [data-testid='stFileUploader'] div, 
-    [data-testid='stFileUploader'] span, 
-    [data-testid='stFileUploader'] small,
-    [data-testid='stFileUploader'] label {
-        color: #000000 !important;
-        font-weight: 900 !important;
-        font-size: 1.1rem !important;
-    }
-    [data-testid='stFileUploader'] button {
-        border: 2px solid #000000 !important;
-        color: #000000 !important;
-        background-color: #FFFFFF !important;
-        font-weight: 900;
-    }
-
-    /* 2. 单选框 (Radio) */
-    [role="radiogroup"] {
-        background-color: #000000;
-        padding: 15px;
-        color: #FFFFFF;
-    }
-    .stRadio label {
+    
+    /* 强制所有文字颜色，解决看不清的问题 */
+    h1, h2, h3, p, div, span, label {
         color: #FFFFFF !important;
-        font-weight: bold;
-        font-size: 1.1rem;
+    }
+    .stMarkdown p {
+        color: #B0B6BE !important; /* 正文稍微灰一点，形成层次 */
     }
 
-    /* 3. 按钮 (Primary Button) */
-    .stButton > button {
-        background-color: #000000;
+    /* === 标题区域 === */
+    h1 {
+        font-size: 2.8rem !important;
+        font-weight: 900 !important;
+        text-align: center;
+        margin-top: 20px;
+        margin-bottom: 10px;
+        letter-spacing: 2px;
+        text-shadow: 0 0 20px rgba(41, 121, 255, 0.3); /* 蓝色微光 */
+    }
+    .subtitle {
+        text-align: center;
+        color: #8E95A3 !important;
+        font-size: 1rem;
+        margin-bottom: 40px;
+        font-weight: 400;
+    }
+
+    /* === Tab 导航栏 (复刻胶囊风格) === */
+    /* 容器调整：去除底线，居中 */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: transparent;
+        border-bottom: none !important;
+        display: flex;
+        flex-wrap: nowrap; /* 禁止换行 */
+        white-space: nowrap;
+        margin-bottom: 30px;
+    }
+    
+    /* 单个 Tab 按钮 (未选中状态) */
+    .stTabs [data-baseweb="tab"] {
+        height: 44px;
+        border-radius: 22px; /* 胶囊圆角 */
+        background-color: #1E232E; /* 深灰底色 */
+        color: #B0B6BE !important;
+        border: 1px solid #2D3342;
+        font-size: 14px;
+        font-weight: 500;
+        padding: 0 16px; /* 压缩内边距，防止溢出 */
+        flex-grow: 1; /* 自动撑满宽度 */
+        justify-content: center;
+        transition: all 0.2s;
+    }
+    
+    /* 鼠标悬停 */
+    .stTabs [data-baseweb="tab"]:hover {
+        background-color: #2D3342;
+        color: #FFFFFF !important;
+    }
+
+    /* 选中状态 (高亮蓝) */
+    .stTabs [aria-selected="true"] {
+        background-color: #2979FF !important; /* 参考图的亮蓝 */
         color: #FFFFFF !important;
         border: none;
-        border-radius: 0px;
-        font-weight: 900;
-        font-size: 1.5rem;
-        padding: 15px 30px;
-        text-transform: uppercase;
-        border: 3px solid #000000;
-        transition: all 0.1s;
+        box-shadow: 0 4px 15px rgba(41, 121, 255, 0.4); /* 发光效果 */
+    }
+
+    /* === 上传框美化 === */
+    [data-testid='stFileUploader'] {
+        background-color: rgba(30, 35, 46, 0.6);
+        border: 2px dashed #444C5C;
+        border-radius: 20px;
+        padding: 40px 20px;
+        text-align: center;
+        transition: all 0.3s;
+    }
+    [data-testid='stFileUploader']:hover {
+        border-color: #2979FF;
+        background-color: rgba(41, 121, 255, 0.05);
+    }
+    [data-testid='stFileUploader'] section { background-color: transparent !important; }
+    /* 隐藏多余小字 */
+    [data-testid='stFileUploader'] small { display: none; }
+
+    /* === 按钮样式 === */
+    .stButton > button {
+        background: linear-gradient(135deg, #2979FF, #1565C0);
+        color: white !important;
+        border: none;
+        border-radius: 12px;
+        padding: 12px 0;
+        font-weight: 700;
+        font-size: 16px;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        margin-top: 10px;
     }
     .stButton > button:hover {
-        background-color: #FFFFFF;
-        color: #000000 !important;
-        transform: translate(-4px, -4px);
-        box-shadow: 6px 6px 0px #000000;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 15px rgba(41, 121, 255, 0.4);
     }
 
-    /* 4. 输入框 */
-    .stTextInput input {
-        border: 2px solid #000000 !important;
-        border-radius: 0px !important;
-        background-color: #FFFFFF !important;
-        color: #000000 !important;
-        font-weight: bold;
-    }
-
-    /* 5. 结果卡片 */
-    .result-card {
-        border: 3px solid #000000;
-        background-color: #FFFFFF;
-        padding: 20px;
+    /* === 结果卡片系统 === */
+    .info-card {
+        background-color: #161920;
+        border-radius: 16px;
+        padding: 24px;
         margin-bottom: 20px;
-        box-shadow: 8px 8px 0px #EEEEEE;
+        border: 1px solid #2A2F3A;
+        position: relative;
+        overflow: hidden;
     }
-    .result-label {
-        background-color: #000000;
-        color: #FFFFFF;
-        padding: 5px 10px;
-        font-weight: 900;
-        text-transform: uppercase;
-        display: inline-block;
-        margin-bottom: 10px;
-    }
-    .result-text {
+    
+    /* 装饰性左边框 */
+    .card-style { border-left: 6px solid #FF4081; }
+    .card-shot  { border-left: 6px solid #FFD740; }
+    .card-prompt{ border-left: 6px solid #448AFF; }
+    .card-audio { border-left: 6px solid #00E676; }
+    .card-ocr   { border-left: 6px solid #FF6E40; }
+
+    /* 卡片标题 */
+    .card-header {
         font-size: 1.1rem;
-        line-height: 1.5;
-        font-weight: 500;
+        font-weight: 700;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
     }
+    
+    /* 颜色定义 */
+    .pink { color: #FF4081 !important; }
+    .yellow { color: #FFD740 !important; }
+    .blue { color: #448AFF !important; }
+    .green { color: #00E676 !important; }
+    .orange { color: #FF6E40 !important; }
+
+    /* 内容文本 */
+    .card-content {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.95rem;
+        line-height: 1.7;
+        color: #D1D5DB !important;
+        background: rgba(255,255,255,0.03);
+        padding: 12px;
+        border-radius: 8px;
+    }
+
+    /* 图片容器圆角 */
+    img { border-radius: 12px; }
+
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. 核心逻辑函数 ---
+# --- 3. 逻辑函数 (保持功能不变) ---
 
 def get_image_base64(image_array):
     img = Image.fromarray(cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB))
@@ -158,7 +203,17 @@ def get_image_base64(image_array):
     img.save(buffer, format="JPEG")
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
-def detect_scenes(video_path, threshold=30.0):
+def get_frame_at_time(video_path, time_sec=1.5):
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps == 0: fps = 30.0
+    frame_id = int(fps * time_sec)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+    ret, frame = cap.read()
+    cap.release()
+    return frame if ret else None
+
+def detect_scenes_ignore_subtitles(video_path, threshold=30.0):
     cap = cv2.VideoCapture(video_path)
     frames = []
     timestamps = []
@@ -166,23 +221,23 @@ def detect_scenes(video_path, threshold=30.0):
     frame_count = 0
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0: fps = 30.0 
-    
     while True:
         ret, frame = cap.read()
         if not ret: break
-        
         if frame_count % 15 == 0: 
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            height, width, _ = frame.shape
+            crop_h = int(height * 0.8) 
+            cropped_frame = frame[0:crop_h, :] 
+            hsv = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2HSV)
             hist = cv2.calcHist([hsv], [0, 1], None, [180, 256], [0, 180, 0, 256])
             cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
-            
             if prev_hist is None:
                 frames.append(frame)
                 timestamps.append(frame_count / fps)
                 prev_hist = hist
             else:
                 score = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL)
-                if (1 - score) > (threshold / 100.0) and (frame_count / fps - timestamps[-1] > 2.0):
+                if (1 - score) > (threshold / 100.0) and (frame_count / fps - timestamps[-1] > 1.5):
                     frames.append(frame)
                     timestamps.append(frame_count / fps)
                     prev_hist = hist
@@ -190,162 +245,102 @@ def detect_scenes(video_path, threshold=30.0):
     cap.release()
     return frames, timestamps
 
-def analyze_image(image_base64, api_key, base_url, model):
-    """视觉分析：使用 Vision Key"""
-    if not api_key: return "Error: Missing Vision API Key"
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    system_prompt = "分析画面。输出：1. English Prompt. 2. Chinese Description. 纯文本。"
+def analyze_image_reverse_engineering(image_base64):
+    client = OpenAI(api_key=VISION_API_KEY, base_url=VISION_BASE_URL)
+    system_prompt = """
+    请分析图片，严格输出 JSON 格式（不要 Markdown）：
+    {
+        "style": "风格提示词...",
+        "shot": "镜头与景别...",
+        "prompt": "英文生成提示词..."
+    }
+    """
     try:
         response = client.chat.completions.create(
-            model=model,
+            model=VISION_MODEL,
             messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": system_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]}
-            ],
-            max_tokens=400,
+                {"role": "user", "content": [{"type": "text", "text": system_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]}
+            ], max_tokens=800,
+        )
+        content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+        return json.loads(content)
+    except:
+        return {"style": "Error", "shot": "Error", "prompt": "Error"}
+
+def analyze_video_frame_dual(image_base64):
+    client = OpenAI(api_key=VISION_API_KEY, base_url=VISION_BASE_URL)
+    system_prompt = """
+    分析视频帧，忽略字幕。请严格按照 JSON 格式输出两部分内容：
+    {
+        "cn_desc": "中文画面描述（包含环境、主体、动作、氛围）",
+        "en_prompt": "High quality English prompt for Sora/Runway video generation"
+    }
+    """
+    try:
+        response = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[
+                {"role": "user", "content": [{"type": "text", "text": system_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]}
+            ], max_tokens=500,
+        )
+        content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+        return json.loads(content)
+    except Exception as e:
+        return {"cn_desc": "解析失败", "en_prompt": str(e)}
+
+def analyze_ocr_text(image_base64):
+    client = OpenAI(api_key=VISION_API_KEY, base_url=VISION_BASE_URL)
+    system_prompt = "你是一个专业的 OCR 文字识别助手。请识别画面中出现的所有【固定中文文字】，忽略底部的即时字幕。直接输出内容。"
+    try:
+        response = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[
+                {"role": "user", "content": [{"type": "text", "text": system_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]}
+            ], max_tokens=500,
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"Vision Error: {str(e)}"
+        return f"OCR Error: {str(e)}"
 
-def transcribe_audio(video_path, api_key, base_url, model):
-    """音频转写：使用 Audio Key"""
-    if not api_key: return "Error: Missing Audio API Key"
-    
+def transcribe_audio_api(video_path):
     try:
-        # 1. 提取音频并转单声道 (修复 code 1214)
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_audio:
             audio_path = temp_audio.name
-        
         video = VideoFileClip(video_path)
-        video.audio.write_audiofile(
-            audio_path, 
-            codec='mp3', 
-            logger=None, 
-            ffmpeg_params=["-ac", "1"] # 强制单声道
-        )
+        video.audio.write_audiofile(audio_path, codec='mp3', logger=None, ffmpeg_params=["-ac", "1"])
         video.close()
-        
-        # 2. 调用 API
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        client = OpenAI(api_key=AUDIO_API_KEY, base_url=AUDIO_BASE_URL)
         with open(audio_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model=model, 
-                file=audio_file,
-                response_format="text",
-                prompt="中文口播内容。"
-            )
-        os.remove(audio_path) 
-        return transcript
-        
+            transcript = client.audio.transcriptions.create(model=AUDIO_MODEL, file=audio_file, response_format="text")
+        os.remove(audio_path)
+        if isinstance(transcript, str):
+            try:
+                data = json.loads(transcript)
+                if "text" in data: return data["text"]
+            except: pass
+            return transcript
+        return transcript.text
     except Exception as e:
-        error_msg = str(e)
-        if "model_not_found" in error_msg or "1211" in error_msg:
-            return f"❌ 配置错误：模型 '{model}' 不存在。\n\n原因：你可能在用智谱的 Key 调用 OpenAI 的模型。\n解决：请在左侧 'AUDIO SETTINGS' 中填入正确的 OpenAI Key，或者将模型改为智谱支持的名称（如果支持）。推荐使用 OpenAI 官方 Key 或 Groq。"
-        return f"Audio Error: {error_msg}"
+        return f"Audio Error: {str(e)}"
 
-# --- 4. 侧边栏：双通道配置 (关键修改) ---
-with st.sidebar:
-    st.markdown("<h5>1. VISION SETTINGS (视觉)</h5>", unsafe_allow_html=True)
-    st.caption("用于画面拆解 (推荐智谱免费版)")
-    v_key = st.text_input("Vision API Key", type="password", help="智谱 Key")
-    v_url = st.text_input("Vision Base URL", value="https://open.bigmodel.cn/api/paas/v4/")
-    v_model = st.text_input("Vision Model", value="glm-4v-flash")
+# --- 4. 界面渲染 ---
+
+# 标题区
+st.markdown("<h1>视听语言分析工作站</h1>", unsafe_allow_html=True)
+st.markdown("<div class='subtitle'>Visual Intelligence Analysis Workstation</div>", unsafe_allow_html=True)
+
+# Tab 导航区 (名称简化，防止溢出)
+tab1, tab2, tab3, tab4 = st.tabs(["图生文反推", "视频拆解", "口播扒取", "文字提取"])
+
+# === Tab 1: 图生文 ===
+with tab1:
+    st.markdown("<div style='text-align:center; color:#888; margin-bottom:10px;'>上传参考图片，AI 将分别反推其风格、镜头语言及完整的生图提示词。</div>", unsafe_allow_html=True)
     
-    st.markdown("<h5>2. AUDIO SETTINGS (听觉)</h5>", unsafe_allow_html=True)
-    st.caption("用于口播提取 (智谱不支持 whisper-1，请用 OpenAI/Groq)")
-    a_key = st.text_input("Audio API Key", type="password", help="OpenAI / Groq Key")
-    a_url = st.text_input("Audio Base URL", value="https://api.openai.com/v1")
-    a_model = st.text_input("Audio Model", value="whisper-1")
+    # 居中布局
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        uploaded_img = st.file_uploader(" ", type=["jpg", "png"], key="img_up")
 
-# --- 5. 主界面 ---
-st.markdown("<h1>VIDEO ANALYSIS<br>PLATFORM</h1>", unsafe_allow_html=True)
-
-mode = st.radio(
-    "SELECT MODE",
-    ["VISUAL ANALYSIS (画面拆解)", "AUDIO DECRYPT (口播提取)"],
-    horizontal=True
-)
-
-st.write("") # Spacer
-
-if "VISUAL" in mode:
-    # ---------------- 画面拆解 ----------------
-    col1, col2 = st.columns([1, 1.2]) 
-    
-    with col1:
-        st.markdown("<h5>INPUT SOURCE</h5>", unsafe_allow_html=True)
-        v_file = st.file_uploader("DROP VIDEO HERE (MP4)", type=["mp4", "mov"], key="v_up")
-        
-        st.markdown("<h5>SENSITIVITY</h5>", unsafe_allow_html=True)
-        threshold = st.slider("CUT THRESHOLD", 10, 60, 30)
-        
-        if v_file:
-            st.video(v_file)
-            st.write("")
-            if st.button("START VISUAL ANALYSIS"):
-                tfile = tempfile.NamedTemporaryFile(delete=False)
-                tfile.write(v_file.read())
-                
-                with st.status("PROCESSING VISUAL DATA...", expanded=True) as status:
-                    frames, tstamps = detect_scenes(tfile.name, threshold)
-                    
-                    res_area = st.container()
-                    for i, (frm, ts) in enumerate(zip(frames, tstamps)):
-                        b64 = get_image_base64(frm)
-                        # 使用 Vision 配置
-                        txt = analyze_image(b64, v_key, v_url, v_model)
-                        
-                        with res_area:
-                            c1, c2 = st.columns([1, 2])
-                            c1.image(frm, channels="BGR", use_container_width=True)
-                            with c2:
-                                st.markdown(f"""
-                                <div class="result-card">
-                                    <div class="result-label">{ts:.2f}s</div>
-                                    <div class="result-text">{txt}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                    
-                    status.update(label="DONE", state="complete", expanded=False)
-
-    with col2:
-        st.markdown("<h5>OUTPUT LOG</h5>", unsafe_allow_html=True)
-        if not v_file:
-            st.info("WAITING FOR FILE...")
-
-elif "AUDIO" in mode:
-    # ---------------- 口播提取 ----------------
-    col1, col2 = st.columns([1, 1.2])
-    
-    with col1:
-        st.markdown("<h5>AUDIO SOURCE</h5>", unsafe_allow_html=True)
-        a_file = st.file_uploader("DROP MEDIA HERE (MP4/MP3)", type=["mp4", "mp3", "wav"], key="a_up")
-        
-        if a_file:
-            st.audio(a_file)
-            st.write("")
-            if st.button("EXTRACT TRANSCRIPT"):
-                tfile_a = tempfile.NamedTemporaryFile(delete=False)
-                tfile_a.write(a_file.read())
-                
-                with col2:
-                    with st.spinner("TRANSCRIBING..."):
-                        # 使用 Audio 配置
-                        txt = transcribe_audio(tfile_a.name, a_key, a_url, a_model)
-                    
-                    st.markdown(f"""
-                    <div class="result-card">
-                        <div class="result-label">FULL TRANSCRIPT</div>
-                        <div class="result-text">{txt}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.text_area("COPY TEXT", value=txt, height=400)
-            
-    with col2:
-        st.markdown("<h5>TEXT RESULT</h5>", unsafe_allow_html=True)
-        if not a_file:
-
-            st.info("WAITING FOR AUDIO...")
+    if uploaded_img:
+        st.write("")
+        c_disp, c_a
