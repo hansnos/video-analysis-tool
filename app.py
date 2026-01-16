@@ -153,13 +153,24 @@ st.markdown("""
 
 # --- 3. 中文字体加载（本地文件） ---
 
-# 多个可能的字体路径
-FONT_PATHS = [
-    os.path.join(os.path.dirname(__file__), "fonts", "SourceHanSansCN-Bold.otf"),
-    "fonts/SourceHanSansCN-Bold.otf",
-    "./fonts/SourceHanSansCN-Bold.otf",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "SourceHanSansCN-Bold.otf"),
-]
+FONT_PATH = "fonts/SourceHanSansCN-Bold.otf"
+
+@st.cache_resource
+def get_font(size):
+    """获取指定大小的中文字体"""
+    try:
+        if os.path.exists(FONT_PATH):
+            return ImageFont.truetype(FONT_PATH, size)
+        else:
+            st.warning(f"⚠️ 字体文件未找到: {FONT_PATH}")
+            st.info(f"当前目录: {os.getcwd()}")
+            st.info(f"目录内容: {os.listdir('.')}")
+            if os.path.exists("fonts"):
+                st.info(f"fonts 目录: {os.listdir('fonts')}")
+            return ImageFont.load_default()
+    except Exception as e:
+        st.error(f"字体加载错误: {e}")
+        return ImageFont.load_default()
 
 def find_font_path():
     """查找字体文件路径"""
@@ -812,3 +823,4 @@ with tab4:
                         os.remove(filepath)
                     except:
                         pass
+
