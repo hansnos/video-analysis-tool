@@ -10,7 +10,6 @@ import io
 import json
 from datetime import datetime
 import zipfile
-import urllib.request
 
 # moviepy 处理视频
 from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
@@ -152,81 +151,45 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. 中文字体加载（多源下载 + 完整错误处理） ---
+# --- 3. 中文字体加载（本地文件） ---
 
-FONT_CACHE_PATH = "/tmp/chinese_font.ttf"
+# 多个可能的字体路径
+FONT_PATHS = [
+    os.path.join(os.path.dirname(__file__), "fonts", "SourceHanSansCN-Bold.otf"),
+    "fonts/SourceHanSansCN-Bold.otf",
+    "./fonts/SourceHanSansCN-Bold.otf",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "SourceHanSansCN-Bold.otf"),
+]
 
-@st.cache_resource
-def download_chinese_font():
-    """
-    下载中文字体，使用多个备用源
-    """
-    if os.path.exists(FONT_CACHE_PATH):
-        # 验证文件是否有效（大于100KB）
-        if os.path.getsize(FONT_CACHE_PATH) > 100000:
-            return FONT_CACHE_PATH
-    
-    # 多个字体下载源（按优先级排序）
-    font_urls = [
-        # 阿里巴巴普惠体（稳定源）
-        "https://at.alicdn.com/wf/webfont/gBOgdj3cVK96/T5HsHqdcLl48.ttf",
-        # 思源黑体 - jsDelivr CDN
-        "https://cdn.jsdelivr.net/gh/AkiChase/StandardFonts@1.0.0/fonts/SourceHanSansCN-Bold.ttf",
-        # 备用：Google Fonts 思源黑体
-        "https://fonts.gstatic.com/ea/notosanssc/v3/NotoSansSC-Bold.otf",
-    ]
-    
-    for i, url in enumerate(font_urls):
-        try:
-            st.info(f"正在下载中文字体... (源 {i+1}/{len(font_urls)})")
-            
-            # 设置超时和 headers
-            request = urllib.request.Request(
-                url,
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            )
-            
-            with urllib.request.urlopen(request, timeout=30) as response:
-                font_data = response.read()
-                
-                # 验证下载的数据
-                if len(font_data) < 100000:  # 字体文件应该大于100KB
-                    continue
-                    
-                with open(FONT_CACHE_PATH, 'wb') as f:
-                    f.write(font_data)
-                
-                # 验证写入成功
-                if os.path.exists(FONT_CACHE_PATH) and os.path.getsize(FONT_CACHE_PATH) > 100000:
-                    st.success("✅ 字体下载成功！")
-                    return FONT_CACHE_PATH
-                    
-        except Exception as e:
-            st.warning(f"源 {i+1} 下载失败: {str(e)[:50]}")
-            continue
-    
+def find_font_path():
+    """查找字体文件路径"""
+    for path in FONT_PATHS:
+        if os.path.exists(path):
+            return path
     return None
 
 @st.cache_resource
 def get_font(size):
-    """
-    获取指定大小的中文字体
-    """
-    font_path = download_chinese_font()
+    """获取指定大小的中文字体"""
+    font_path = find_font_path()
     
-    if font_path and os.path.exists(font_path):
+    if font_path:
         try:
             font = ImageFont.truetype(font_path, size)
-            # 测试字体是否支持中文
-            test_img = Image.new('RGB', (100, 100))
-            test_draw = ImageDraw.Draw(test_img)
-            test_draw.text((0, 0), "测试", font=font)
             return font
         except Exception as e:
-            st.warning(f"字体加载失败: {e}")
+            st.error(f"字体加载失败: {e}")
+    else:
+        # 调试信息
+        st.error("❌ 找不到字体文件！请确保已上传 fonts/SourceHanSansCN-Bold.otf")
+        st.info(f"当前工作目录: {os.getcwd()}")
+        try:
+            st.info(f"目录内容: {os.listdir('.')}")
+            if os.path.exists("fonts"):
+                st.info(f"fonts 目录: {os.listdir('fonts')}")
+        except:
+            pass
     
-    # 最后备用：使用 Pillow 默认字体（不支持中文，但不会报错）
-    st.error("⚠️ 中文字体加载失败，文字可能无法正确显示")
     return ImageFont.load_default()
 
 # --- 4. 核心逻辑函数 ---
@@ -380,7 +343,7 @@ def transcribe_audio_api(video_path):
     except Exception as e:
         return f"Audio Error: {str(e)}"
 
-# --- 5. 大字报生成函数（使用 OpenCV 逐帧处理） ---
+# --- 5. 大字报生成函数 ---
 
 def generate_poster_image(width, height, line1, line2, line3, style="v1"):
     """生成大字报 PNG 图层"""
@@ -452,9 +415,7 @@ def generate_poster_image(width, height, line1, line2, line3, style="v1"):
     return img
 
 def process_video_opencv(video_path, poster_img, mirror=False, high_saturation=False):
-    """
-    使用 OpenCV 逐帧处理视频（无需 FFmpeg 命令行）
-    """
+    """使用 OpenCV 逐帧处理视频"""
     try:
         cap = cv2.VideoCapture(video_path)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -463,50 +424,42 @@ def process_video_opencv(video_path, poster_img, mirror=False, high_saturation=F
         if fps == 0:
             fps = 30.0
         
-        # 输出临时文件
         output_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
-        # 将 PIL 图像转换为 OpenCV 格式（BGRA）
         poster_array = np.array(poster_img.convert('RGBA'))
         poster_bgra = cv2.cvtColor(poster_array, cv2.COLOR_RGBA2BGRA)
         
-        # 分离 alpha 通道
         b, g, r, a = cv2.split(poster_bgra)
         poster_bgr = cv2.merge([b, g, r])
         alpha = a.astype(float) / 255.0
         alpha_3ch = cv2.merge([alpha, alpha, alpha])
         
-        frame_count = 0
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             
-            # 镜像处理
             if mirror:
                 frame = cv2.flip(frame, 1)
             
-            # 高饱和度处理
             if high_saturation:
                 hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
-                hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.5, 0, 255)  # 饱和度 x1.5
-                hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 1.1, 0, 255)  # 亮度 x1.1
+                hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.5, 0, 255)
+                hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 1.1, 0, 255)
                 frame = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
             
-            # 叠加大字报（alpha 混合）
             frame = frame.astype(float)
             blended = frame * (1 - alpha_3ch) + poster_bgr.astype(float) * alpha_3ch
             frame = blended.astype(np.uint8)
             
             out.write(frame)
-            frame_count += 1
         
         cap.release()
         out.release()
         
-        # 添加音频（使用 moviepy）
+        # 添加音频
         try:
             original_video = VideoFileClip(video_path)
             if original_video.audio is not None:
@@ -526,13 +479,10 @@ def process_video_opencv(video_path, poster_img, mirror=False, high_saturation=F
                 original_video.close()
                 return output_path
         except Exception as e:
-            st.warning(f"音频处理失败，输出静音视频: {e}")
             return output_path
             
     except Exception as e:
         st.error(f"视频处理失败: {e}")
-        import traceback
-        st.code(traceback.format_exc())
         return None
 
 def generate_all_videos(video_path, line1, line2, line3, use_mirror, use_saturation):
@@ -540,14 +490,12 @@ def generate_all_videos(video_path, line1, line2, line3, use_mirror, use_saturat
     results = []
     width, height, duration, fps = get_video_info(video_path)
     
-    # 生成三个版本的 PNG
     posters = {
         "V1": generate_poster_image(width, height, line1, line2, line3, "v1"),
         "V2": generate_poster_image(width, height, line1, line2, line3, "v2"),
         "V3": generate_poster_image(width, height, line1, line2, line3, "v3"),
     }
     
-    # 确定要处理的效果组合
     effect_combinations = []
     
     if not use_mirror and not use_saturation:
@@ -592,7 +540,6 @@ def generate_all_videos(video_path, line1, line2, line3, use_mirror, use_saturat
 st.markdown("<h1>视听语言分析工作站</h1>", unsafe_allow_html=True)
 st.markdown("<div class='subtitle'>Visual Intelligence Analysis Workstation</div>", unsafe_allow_html=True)
 
-# Tab 导航区
 tab1, tab2, tab3, tab4 = st.tabs(["图生文反推", "视频拆解", "口播扒取", "🔒 大字报生成"])
 
 # === Tab 1: 图生文 ===
@@ -706,7 +653,7 @@ with tab3:
                 </div>
                 """, unsafe_allow_html=True)
 
-# === Tab 4: 大字报生成（需登录） ===
+# === Tab 4: 大字报生成 ===
 with tab4:
     st.markdown("<div style='text-align:center; color:#888; margin-bottom:10px;'>🔐 团队专用功能 - 自动生成大字报视频</div>", unsafe_allow_html=True)
     
@@ -769,7 +716,6 @@ with tab4:
         
         st.divider()
         
-        # 预览区域
         if poster_video and line1:
             st.markdown("### 👁️ 样式预览")
             
@@ -821,7 +767,7 @@ with tab4:
                 
                 st.write("📐 读取视频信息...")
                 st.write("🎨 生成大字报 PNG...")
-                st.write("🎬 合成视频（这可能需要一些时间）...")
+                st.write("🎬 合成视频...")
                 
                 results = generate_all_videos(
                     temp_input.name, 
