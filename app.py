@@ -8,12 +8,12 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 import io
 import json
-import subprocess
 from datetime import datetime
 import zipfile
+import urllib.request
 
-# 确保安装的是 moviepy==1.0.3
-from moviepy.editor import VideoFileClip
+# moviepy 处理视频
+from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
 
 # --- 1. 配置与密钥加载 ---
 st.set_page_config(
@@ -53,39 +53,26 @@ USERS = {
 }
 
 def check_login():
-    """检查登录状态"""
     return st.session_state.get("logged_in", False)
 
 def get_current_user():
-    """获取当前登录用户"""
     return st.session_state.get("username", None)
 
 def log_usage(username, feature, options=""):
-    """记录使用日志到 Google Sheets"""
     if not GSHEET_ENABLED:
         return
-    
     try:
         import gspread
         from google.oauth2.service_account import Credentials
-        
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds_dict = json.loads(GSHEET_CREDENTIALS)
         credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         gc = gspread.authorize(credentials)
-        
         sheet = gc.open_by_url(GSHEET_URL).sheet1
-        
-        # 记录：时间、用户、功能、选项
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sheet.append_row([timestamp, username, feature, options])
-        
     except Exception as e:
-        st.warning(f"日志记录失败: {e}")
+        pass  # 静默失败
 
 # --- 2. 样式 ---
 st.markdown("""
@@ -105,8 +92,7 @@ st.markdown("""
 
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px; background-color: transparent; border-bottom: none !important;
-        display: flex; justify-content: center;
-        flex-wrap: nowrap; margin-bottom: 30px;
+        display: flex; justify-content: center; flex-wrap: nowrap; margin-bottom: 30px;
     }
     .stTabs [data-baseweb="tab"] {
         height: 44px; border-radius: 22px; background-color: #1E232E; color: #B0B6BE !important;
@@ -135,7 +121,6 @@ st.markdown("""
     .card-shot  { border-left: 6px solid #FFD740; }
     .card-prompt{ border-left: 6px solid #448AFF; }
     .card-audio { border-left: 6px solid #00E676; }
-    .card-ocr   { border-left: 6px solid #FF6E40; }
     .card-cn    { border-left: 6px solid #9C27B0; }
     .card-poster { border-left: 6px solid #00BCD4; }
 
@@ -144,7 +129,6 @@ st.markdown("""
     .yellow { color: #FFD740 !important; }
     .blue { color: #448AFF !important; }
     .green { color: #00E676 !important; }
-    .orange { color: #FF6E40 !important; }
     .purple { color: #9C27B0 !important; }
     .cyan { color: #00BCD4 !important; }
 
@@ -165,26 +149,40 @@ st.markdown("""
         border-color: #2979FF !important;
         color: #2979FF !important;
     }
-    
-    /* 登录框样式 */
-    .login-box {
-        background: linear-gradient(135deg, #1a1f2e 0%, #0d1117 100%);
-        border: 1px solid #30363d;
-        border-radius: 16px;
-        padding: 40px;
-        max-width: 400px;
-        margin: 50px auto;
-    }
-    .login-title {
-        text-align: center;
-        font-size: 1.5rem;
-        margin-bottom: 30px;
-        color: #00BCD4 !important;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. 核心逻辑函数 ---
+# --- 3. 字体加载（修复版） ---
+
+@st.cache_resource
+def get_font(size):
+    """下载并缓存思源黑体"""
+    font_path = "/tmp/NotoSansSC-Bold.otf"
+    
+    if not os.path.exists(font_path):
+        try:
+            # 从 GitHub 下载思源黑体
+            font_url = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Bold.otf"
+            st.info("首次使用，正在下载中文字体...")
+            urllib.request.urlretrieve(font_url, font_path)
+        except Exception as e:
+            st.warning(f"字体下载失败: {e}，使用备用方案")
+            # 尝试系统字体
+            system_fonts = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            ]
+            for sf in system_fonts:
+                if os.path.exists(sf):
+                    return ImageFont.truetype(sf, size)
+            return ImageFont.load_default()
+    
+    try:
+        return ImageFont.truetype(font_path, size)
+    except:
+        return ImageFont.load_default()
+
+# --- 4. 核心逻辑函数 ---
 
 def get_image_base64(image_array):
     img = Image.fromarray(cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB))
@@ -208,13 +206,16 @@ def get_frame_at_time(video_path, time_sec=1.5):
     cap.release()
     return frame if ret else None
 
-def get_video_dimensions(video_path):
-    """获取视频尺寸"""
+def get_video_info(video_path):
+    """获取视频尺寸和时长"""
     cap = cv2.VideoCapture(video_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = frame_count / fps if fps > 0 else 0
     cap.release()
-    return width, height
+    return width, height, duration
 
 def detect_scenes_ignore_subtitles(video_path, threshold=30.0):
     cap = cv2.VideoCapture(video_path)
@@ -268,12 +269,10 @@ def analyze_image_reverse_engineering(image_base64):
     try:
         response = client.chat.completions.create(
             model=VISION_MODEL,
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": system_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]}
-            ],
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": system_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+            ]}],
             max_tokens=800,
         )
         content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
@@ -302,32 +301,16 @@ def analyze_video_frame_reconstruction(image_base64):
     try:
         response = client.chat.completions.create(
             model=VISION_MODEL,
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": system_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]}
-            ],
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": system_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+            ]}],
             max_tokens=800,
         )
         content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
         return json.loads(content)
     except Exception as e:
         return {"cn_desc": "解析失败", "en_prompt": str(e)}
-
-def analyze_ocr_text(image_base64):
-    client = OpenAI(api_key=VISION_API_KEY, base_url=VISION_BASE_URL)
-    system_prompt = "你是一个专业的 OCR 文字识别助手。请识别画面中出现的所有【固定中文文字】，忽略底部的即时字幕。直接输出内容。"
-    try:
-        response = client.chat.completions.create(
-            model=VISION_MODEL,
-            messages=[
-                {"role": "user", "content": [{"type": "text", "text": system_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]}
-            ], max_tokens=500,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"OCR Error: {str(e)}"
 
 def transcribe_audio_api(video_path):
     try:
@@ -350,77 +333,41 @@ def transcribe_audio_api(video_path):
     except Exception as e:
         return f"Audio Error: {str(e)}"
 
-# --- 大字报生成函数 ---
-
-def load_font(size, weight="Regular"):
-    """加载思源黑体（从 Google Fonts CDN 或本地）"""
-    # 尝试加载本地字体文件
-    font_paths = [
-        "NotoSansSC-Bold.ttf",
-        "NotoSansSC-Regular.ttf", 
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    ]
-    
-    for path in font_paths:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size)
-            except:
-                continue
-    
-    # 如果没有本地字体，尝试下载
-    try:
-        import urllib.request
-        font_url = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Bold.otf"
-        font_path = "/tmp/NotoSansSC-Bold.otf"
-        if not os.path.exists(font_path):
-            urllib.request.urlretrieve(font_url, font_path)
-        return ImageFont.truetype(font_path, size)
-    except:
-        # 最后使用默认字体
-        return ImageFont.load_default()
+# --- 5. 大字报生成函数（使用 moviepy，无需 FFmpeg） ---
 
 def generate_poster_v1(width, height, line1, line2, line3):
-    """
-    V1 样式：标准居中布局
-    - 标题：大号黄色
-    - 副标题：中号白色
-    - 评论：中号黄色
-    """
+    """V1 样式：标准居中布局"""
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # 字体大小（根据视频宽度自适应）
-    title_size = int(width * 0.08)
-    subtitle_size = int(width * 0.045)
-    comment_size = int(width * 0.05)
+    # 字体大小（根据视频宽度自适应，放大倍数）
+    title_size = max(int(width * 0.09), 60)
+    subtitle_size = max(int(width * 0.05), 36)
+    comment_size = max(int(width * 0.055), 40)
     
-    font_title = load_font(title_size)
-    font_subtitle = load_font(subtitle_size)
-    font_comment = load_font(comment_size)
+    font_title = get_font(title_size)
+    font_subtitle = get_font(subtitle_size)
+    font_comment = get_font(comment_size)
     
-    # 颜色
     yellow = (255, 255, 0, 255)
     white = (255, 255, 255, 255)
     
-    # 计算位置
     margin_top = int(height * 0.05)
-    line_spacing = int(height * 0.02)
+    line_spacing = int(height * 0.025)
     
-    # 第1行：黄色大标题
+    # 第1行
     bbox1 = draw.textbbox((0, 0), line1, font=font_title)
     x1 = (width - (bbox1[2] - bbox1[0])) // 2
     y1 = margin_top
     draw.text((x1, y1), line1, font=font_title, fill=yellow)
     
-    # 第2行：白色副标题
+    # 第2行
     bbox2 = draw.textbbox((0, 0), line2, font=font_subtitle)
     x2 = (width - (bbox2[2] - bbox2[0])) // 2
     y2 = y1 + (bbox1[3] - bbox1[1]) + line_spacing
     draw.text((x2, y2), line2, font=font_subtitle, fill=white)
     
-    # 第3行：黄色评论
+    # 第3行
     bbox3 = draw.textbbox((0, 0), line3, font=font_comment)
     x3 = (width - (bbox3[2] - bbox3[0])) // 2
     y3 = y2 + (bbox2[3] - bbox2[1]) + line_spacing * 1.5
@@ -429,92 +376,72 @@ def generate_poster_v1(width, height, line1, line2, line3):
     return img
 
 def generate_poster_v2(width, height, line1, line2, line3):
-    """
-    V2 样式：大行距 + 较小字体
-    - 整体更舒朗
-    - 副标题用浅灰色
-    """
+    """V2 样式：大行距 + 较小字体"""
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # 字体大小（比V1小）
-    title_size = int(width * 0.07)
-    subtitle_size = int(width * 0.038)
-    comment_size = int(width * 0.042)
+    title_size = max(int(width * 0.08), 54)
+    subtitle_size = max(int(width * 0.042), 30)
+    comment_size = max(int(width * 0.048), 34)
     
-    font_title = load_font(title_size)
-    font_subtitle = load_font(subtitle_size)
-    font_comment = load_font(comment_size)
+    font_title = get_font(title_size)
+    font_subtitle = get_font(subtitle_size)
+    font_comment = get_font(comment_size)
     
-    # 颜色
-    yellow = (255, 220, 0, 255)  # 偏暖黄
+    yellow = (255, 220, 0, 255)
     light_gray = (200, 200, 200, 255)
     orange_yellow = (255, 180, 0, 255)
     
-    # 计算位置（更大的边距和行距）
     margin_top = int(height * 0.06)
-    line_spacing = int(height * 0.035)
+    line_spacing = int(height * 0.04)
     
-    # 第1行
     bbox1 = draw.textbbox((0, 0), line1, font=font_title)
     x1 = (width - (bbox1[2] - bbox1[0])) // 2
     y1 = margin_top
     draw.text((x1, y1), line1, font=font_title, fill=yellow)
     
-    # 第2行
     bbox2 = draw.textbbox((0, 0), line2, font=font_subtitle)
     x2 = (width - (bbox2[2] - bbox2[0])) // 2
     y2 = y1 + (bbox1[3] - bbox1[1]) + line_spacing
     draw.text((x2, y2), line2, font=font_subtitle, fill=light_gray)
     
-    # 第3行
     bbox3 = draw.textbbox((0, 0), line3, font=font_comment)
     x3 = (width - (bbox3[2] - bbox3[0])) // 2
-    y3 = y2 + (bbox2[3] - bbox2[1]) + line_spacing * 2
+    y3 = y2 + (bbox2[3] - bbox2[1]) + line_spacing * 1.5
     draw.text((x3, y3), line3, font=font_comment, fill=orange_yellow)
     
     return img
 
 def generate_poster_v3(width, height, line1, line2, line3):
-    """
-    V3 样式：超大标题 + 紧凑布局
-    - 标题特别大
-    - 整体更紧凑有冲击力
-    """
+    """V3 样式：超大标题 + 紧凑布局"""
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # 字体大小（标题超大）
-    title_size = int(width * 0.10)
-    subtitle_size = int(width * 0.04)
-    comment_size = int(width * 0.055)
+    title_size = max(int(width * 0.11), 72)
+    subtitle_size = max(int(width * 0.045), 32)
+    comment_size = max(int(width * 0.06), 44)
     
-    font_title = load_font(title_size)
-    font_subtitle = load_font(subtitle_size)
-    font_comment = load_font(comment_size)
+    font_title = get_font(title_size)
+    font_subtitle = get_font(subtitle_size)
+    font_comment = get_font(comment_size)
     
-    # 颜色（高对比度）
     bright_yellow = (255, 255, 50, 255)
     white = (255, 255, 255, 255)
     gold = (255, 215, 0, 255)
     
-    # 计算位置（紧凑）
     margin_top = int(height * 0.04)
-    line_spacing = int(height * 0.015)
+    line_spacing = int(height * 0.018)
     
-    # 第1行
     bbox1 = draw.textbbox((0, 0), line1, font=font_title)
     x1 = (width - (bbox1[2] - bbox1[0])) // 2
     y1 = margin_top
     draw.text((x1, y1), line1, font=font_title, fill=bright_yellow)
     
-    # 第2行
     bbox2 = draw.textbbox((0, 0), line2, font=font_subtitle)
     x2 = (width - (bbox2[2] - bbox2[0])) // 2
     y2 = y1 + (bbox1[3] - bbox1[1]) + line_spacing
     draw.text((x2, y2), line2, font=font_subtitle, fill=white)
     
-    # 第3行
     bbox3 = draw.textbbox((0, 0), line3, font=font_comment)
     x3 = (width - (bbox3[2] - bbox3[0])) // 2
     y3 = y2 + (bbox2[3] - bbox2[1]) + line_spacing
@@ -522,72 +449,61 @@ def generate_poster_v3(width, height, line1, line2, line3):
     
     return img
 
-def process_video_with_effects(video_path, mirror=False, high_saturation=False):
+def process_video_with_overlay(video_path, poster_img, mirror=False, high_saturation=False):
     """
-    处理视频：镜像 / 高饱和度高亮度
-    返回处理后的视频路径
+    使用 moviepy 处理视频：叠加 PNG + 可选镜像/高饱和度
     """
-    if not mirror and not high_saturation:
-        return video_path
-    
-    output_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
-    
-    filters = []
-    if mirror:
-        filters.append("hflip")
-    if high_saturation:
-        filters.append("eq=saturation=1.5:brightness=0.1")
-    
-    filter_str = ",".join(filters)
-    
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-vf", filter_str,
-        "-c:a", "copy",
-        output_path
-    ]
-    
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
+        # 加载视频
+        video = VideoFileClip(video_path)
+        
+        # 镜像处理
+        if mirror:
+            video = video.fx(lambda clip: clip.fl_image(lambda frame: frame[:, ::-1, :]))
+        
+        # 高饱和度处理
+        if high_saturation:
+            def saturate(frame):
+                # 转换到 HSV，增加饱和度
+                hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV).astype(np.float32)
+                hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.5, 0, 255)  # 饱和度 x1.5
+                hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 1.1, 0, 255)  # 亮度 x1.1
+                return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+            video = video.fl_image(saturate)
+        
+        # 将 PIL 图像转换为 numpy 数组
+        poster_array = np.array(poster_img)
+        
+        # 创建透明叠加层
+        overlay = ImageClip(poster_array, ismask=False, transparent=True)
+        overlay = overlay.set_duration(video.duration)
+        overlay = overlay.set_position((0, 0))
+        
+        # 合成视频
+        final = CompositeVideoClip([video, overlay])
+        
+        # 输出到临时文件
+        output_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+        final.write_videofile(
+            output_path, 
+            codec='libx264', 
+            audio_codec='aac',
+            logger=None,
+            fps=video.fps
+        )
+        
+        video.close()
+        final.close()
+        
         return output_path
-    except subprocess.CalledProcessError as e:
+    except Exception as e:
         st.error(f"视频处理失败: {e}")
-        return video_path
-
-def overlay_png_on_video(video_path, png_image, output_path):
-    """
-    使用 FFmpeg 将 PNG 叠加到视频上
-    """
-    # 保存 PNG 到临时文件
-    png_temp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    png_image.save(png_temp.name, "PNG")
-    
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-i", png_temp.name,
-        "-filter_complex", "[0:v][1:v]overlay=0:0:format=auto",
-        "-c:a", "copy",
-        output_path
-    ]
-    
-    try:
-        subprocess.run(cmd, check=True, capture_output=True)
-        os.remove(png_temp.name)
-        return True
-    except subprocess.CalledProcessError as e:
-        st.error(f"叠加失败: {e.stderr.decode()}")
-        os.remove(png_temp.name)
-        return False
+        return None
 
 def generate_all_videos(video_path, line1, line2, line3, use_mirror, use_saturation):
-    """
-    生成所有版本的视频
-    返回: [(文件名, 文件路径), ...]
-    """
+    """生成所有版本的视频"""
     results = []
-    width, height = get_video_dimensions(video_path)
+    width, height, duration = get_video_info(video_path)
     
     # 生成三个版本的 PNG
     posters = {
@@ -600,38 +516,47 @@ def generate_all_videos(video_path, line1, line2, line3, use_mirror, use_saturat
     effect_combinations = []
     
     if not use_mirror and not use_saturation:
-        # 无特效：只生成原版
-        effect_combinations.append(("原版", video_path))
+        effect_combinations.append(("原版", False, False))
     else:
         if use_mirror:
-            mirror_video = process_video_with_effects(video_path, mirror=True, high_saturation=False)
-            effect_combinations.append(("镜像", mirror_video))
+            effect_combinations.append(("镜像", True, False))
         if use_saturation:
-            sat_video = process_video_with_effects(video_path, mirror=False, high_saturation=True)
-            effect_combinations.append(("高饱和", sat_video))
+            effect_combinations.append(("高饱和", False, True))
     
     # 为每个效果组合生成 V1/V2/V3
-    for effect_name, processed_video in effect_combinations:
+    total_tasks = len(effect_combinations) * len(posters)
+    current_task = 0
+    
+    progress_bar = st.progress(0)
+    
+    for effect_name, is_mirror, is_sat in effect_combinations:
         for version, poster_img in posters.items():
-            output_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-            output_path = output_file.name
+            current_task += 1
+            progress_bar.progress(current_task / total_tasks)
             
-            if overlay_png_on_video(processed_video, poster_img, output_path):
+            output_path = process_video_with_overlay(
+                video_path, poster_img, 
+                mirror=is_mirror, 
+                high_saturation=is_sat
+            )
+            
+            if output_path:
                 if effect_name == "原版":
                     filename = f"大字报_{version}.mp4"
                 else:
                     filename = f"大字报_{effect_name}_{version}.mp4"
                 results.append((filename, output_path))
     
+    progress_bar.empty()
     return results
 
-# --- 4. 界面渲染 ---
+# --- 6. 界面渲染 ---
 
 st.markdown("<h1>视听语言分析工作站</h1>", unsafe_allow_html=True)
 st.markdown("<div class='subtitle'>Visual Intelligence Analysis Workstation</div>", unsafe_allow_html=True)
 
-# Tab 导航区
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["图生文反推", "视频拆解", "口播扒取", "文字提取", "🔒 大字报生成"])
+# Tab 导航区（删除了第4个"文字提取"）
+tab1, tab2, tab3, tab4 = st.tabs(["图生文反推", "视频拆解", "口播扒取", "🔒 大字报生成"])
 
 # === Tab 1: 图生文 ===
 with tab1:
@@ -744,42 +669,11 @@ with tab3:
                 </div>
                 """, unsafe_allow_html=True)
 
-# === Tab 4: 文字提取 ===
+# === Tab 4: 大字报生成（需登录） ===
 with tab4:
-    st.markdown("<div style='text-align:center; color:#888; margin-bottom:10px;'>识别大字报、包装文字及关键信息</div>", unsafe_allow_html=True)
-    
-    t4_c1, t4_c2, t4_c3 = st.columns([1, 2, 1])
-    with t4_c2:
-        ocr_file = st.file_uploader(" ", type=["mp4", "mov"], key="ocr_up")
-    
-    if ocr_file:
-        tfile_ocr = tempfile.NamedTemporaryFile(delete=False)
-        tfile_ocr.write(ocr_file.read())
-        frame = get_frame_at_time(tfile_ocr.name, time_sec=1.5)
-        
-        if frame is not None:
-            with st.spinner("OCR 识别中..."):
-                b64 = get_image_base64(frame)
-                ocr_text = analyze_ocr_text(b64)
-                
-                ocr_c1, ocr_c2 = st.columns([1, 1])
-                with ocr_c1:
-                    st.image(frame, channels="BGR", caption="识别帧", use_container_width=True)
-                with ocr_c2:
-                    st.markdown(f"""
-                    <div class="info-card card-ocr">
-                        <div class="card-header orange">🔠 提取结果 (OCR)</div>
-                        <div class="card-content" style="white-space: pre-line; user-select: all;">{ocr_text}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-# === Tab 5: 大字报生成（需登录） ===
-with tab5:
     st.markdown("<div style='text-align:center; color:#888; margin-bottom:10px;'>🔐 团队专用功能 - 自动生成大字报视频</div>", unsafe_allow_html=True)
     
-    # 检查登录状态
     if not check_login():
-        # 显示登录框
         login_c1, login_c2, login_c3 = st.columns([1, 1.5, 1])
         with login_c2:
             st.markdown("""
@@ -801,10 +695,8 @@ with tab5:
                 else:
                     st.error("❌ 账号或密码错误")
     else:
-        # 已登录，显示功能界面
         current_user = get_current_user()
         
-        # 顶部显示用户信息和退出按钮
         user_col1, user_col2 = st.columns([6, 1])
         with user_col1:
             st.markdown(f"<div style='color:#00BCD4;'>👤 当前用户: <b>{current_user}</b></div>", unsafe_allow_html=True)
@@ -816,7 +708,6 @@ with tab5:
         
         st.divider()
         
-        # 主功能区
         main_c1, main_c2 = st.columns([1, 1])
         
         with main_c1:
@@ -827,7 +718,7 @@ with tab5:
                 st.video(poster_video)
         
         with main_c2:
-            st.markdown("### ✏️ 输入文字")
+            st.markdown("### ✏️ 输入文字（3行）")
             line1 = st.text_input("第1行（黄色大标题）", value="三国&模拟&经营", placeholder="例：三国&模拟&经营")
             line2 = st.text_input("第2行（白色副标题）", value="一款以模拟经营为核心的现代三国手游", placeholder="例：一款以模拟经营为核心的...")
             line3 = st.text_input("第3行（黄色评论）", value="玩家：玩了三天还在新手村经营木材厂", placeholder="例：玩家：玩了三天...")
@@ -845,14 +736,12 @@ with tab5:
         if poster_video and line1:
             st.markdown("### 👁️ 样式预览")
             
-            # 临时保存视频获取尺寸
             temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
             temp_video.write(poster_video.read())
-            poster_video.seek(0)  # 重置读取位置
+            poster_video.seek(0)
             
-            width, height = get_video_dimensions(temp_video.name)
+            width, height, _ = get_video_info(temp_video.name)
             
-            # 生成预览图
             preview_cols = st.columns(3)
             
             posters = [
@@ -861,49 +750,41 @@ with tab5:
                 ("V3 冲击", generate_poster_v3(width, height, line1, line2, line3)),
             ]
             
-            # 获取视频第一帧作为背景
             bg_frame = get_frame_at_time(temp_video.name, 0.5)
             
             for i, (name, poster) in enumerate(posters):
                 with preview_cols[i]:
-                    # 合成预览图
                     if bg_frame is not None:
                         bg_img = Image.fromarray(cv2.cvtColor(bg_frame, cv2.COLOR_BGR2RGB)).convert("RGBA")
                         bg_img = bg_img.resize((width, height))
                         preview = Image.alpha_composite(bg_img, poster)
                         st.image(preview, caption=name, use_container_width=True)
                     else:
-                        # 纯黑背景预览
                         black_bg = Image.new('RGBA', (width, height), (0, 0, 0, 255))
                         preview = Image.alpha_composite(black_bg, poster)
                         st.image(preview, caption=name, use_container_width=True)
         
         st.divider()
         
-        # 生成按钮
         gen_c1, gen_c2, gen_c3 = st.columns([1, 2, 1])
         with gen_c2:
             generate_btn = st.button("🚀 生成大字报视频", use_container_width=True, type="primary")
         
         if generate_btn and poster_video:
-            # 记录使用日志
             options_str = []
             if use_mirror: options_str.append("镜像")
             if use_saturation: options_str.append("高饱和")
             log_usage(current_user, "大字报生成", ", ".join(options_str) if options_str else "无特效")
             
             with st.status("正在生成视频...", expanded=True) as status:
-                # 保存上传的视频
                 temp_input = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
                 poster_video.seek(0)
                 temp_input.write(poster_video.read())
                 temp_input.close()
                 
                 st.write("📐 读取视频信息...")
-                
                 st.write("🎨 生成大字报 PNG...")
-                
-                st.write("🎬 合成视频...")
+                st.write("🎬 合成视频（这可能需要一些时间）...")
                 
                 results = generate_all_videos(
                     temp_input.name, 
@@ -913,7 +794,6 @@ with tab5:
                 
                 status.update(label=f"✅ 生成完成！共 {len(results)} 个视频", state="complete")
             
-            # 显示下载按钮
             if results:
                 st.markdown("### 📥 下载生成的视频")
                 
@@ -929,7 +809,6 @@ with tab5:
                                 key=f"dl_poster_{i}"
                             )
                 
-                # 提供打包下载
                 if len(results) > 1:
                     st.divider()
                     zip_buffer = io.BytesIO()
@@ -945,7 +824,6 @@ with tab5:
                         use_container_width=True
                     )
                 
-                # 清理临时文件
                 for _, filepath in results:
                     try:
                         os.remove(filepath)
