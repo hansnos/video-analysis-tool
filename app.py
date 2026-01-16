@@ -72,7 +72,7 @@ def log_usage(username, feature, options=""):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sheet.append_row([timestamp, username, feature, options])
     except Exception as e:
-        pass  # 静默失败
+        pass
 
 # --- 2. 样式 ---
 st.markdown("""
@@ -152,35 +152,82 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. 字体加载（修复版） ---
+# --- 3. 中文字体加载（多源下载 + 完整错误处理） ---
+
+FONT_CACHE_PATH = "/tmp/chinese_font.ttf"
+
+@st.cache_resource
+def download_chinese_font():
+    """
+    下载中文字体，使用多个备用源
+    """
+    if os.path.exists(FONT_CACHE_PATH):
+        # 验证文件是否有效（大于100KB）
+        if os.path.getsize(FONT_CACHE_PATH) > 100000:
+            return FONT_CACHE_PATH
+    
+    # 多个字体下载源（按优先级排序）
+    font_urls = [
+        # 阿里巴巴普惠体（稳定源）
+        "https://at.alicdn.com/wf/webfont/gBOgdj3cVK96/T5HsHqdcLl48.ttf",
+        # 思源黑体 - jsDelivr CDN
+        "https://cdn.jsdelivr.net/gh/AkiChase/StandardFonts@1.0.0/fonts/SourceHanSansCN-Bold.ttf",
+        # 备用：Google Fonts 思源黑体
+        "https://fonts.gstatic.com/ea/notosanssc/v3/NotoSansSC-Bold.otf",
+    ]
+    
+    for i, url in enumerate(font_urls):
+        try:
+            st.info(f"正在下载中文字体... (源 {i+1}/{len(font_urls)})")
+            
+            # 设置超时和 headers
+            request = urllib.request.Request(
+                url,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            )
+            
+            with urllib.request.urlopen(request, timeout=30) as response:
+                font_data = response.read()
+                
+                # 验证下载的数据
+                if len(font_data) < 100000:  # 字体文件应该大于100KB
+                    continue
+                    
+                with open(FONT_CACHE_PATH, 'wb') as f:
+                    f.write(font_data)
+                
+                # 验证写入成功
+                if os.path.exists(FONT_CACHE_PATH) and os.path.getsize(FONT_CACHE_PATH) > 100000:
+                    st.success("✅ 字体下载成功！")
+                    return FONT_CACHE_PATH
+                    
+        except Exception as e:
+            st.warning(f"源 {i+1} 下载失败: {str(e)[:50]}")
+            continue
+    
+    return None
 
 @st.cache_resource
 def get_font(size):
-    """下载并缓存思源黑体"""
-    font_path = "/tmp/NotoSansSC-Bold.otf"
+    """
+    获取指定大小的中文字体
+    """
+    font_path = download_chinese_font()
     
-    if not os.path.exists(font_path):
+    if font_path and os.path.exists(font_path):
         try:
-            # 从 GitHub 下载思源黑体
-            font_url = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Bold.otf"
-            st.info("首次使用，正在下载中文字体...")
-            urllib.request.urlretrieve(font_url, font_path)
+            font = ImageFont.truetype(font_path, size)
+            # 测试字体是否支持中文
+            test_img = Image.new('RGB', (100, 100))
+            test_draw = ImageDraw.Draw(test_img)
+            test_draw.text((0, 0), "测试", font=font)
+            return font
         except Exception as e:
-            st.warning(f"字体下载失败: {e}，使用备用方案")
-            # 尝试系统字体
-            system_fonts = [
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            ]
-            for sf in system_fonts:
-                if os.path.exists(sf):
-                    return ImageFont.truetype(sf, size)
-            return ImageFont.load_default()
+            st.warning(f"字体加载失败: {e}")
     
-    try:
-        return ImageFont.truetype(font_path, size)
-    except:
-        return ImageFont.load_default()
+    # 最后备用：使用 Pillow 默认字体（不支持中文，但不会报错）
+    st.error("⚠️ 中文字体加载失败，文字可能无法正确显示")
+    return ImageFont.load_default()
 
 # --- 4. 核心逻辑函数 ---
 
@@ -215,7 +262,7 @@ def get_video_info(video_path):
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = frame_count / fps if fps > 0 else 0
     cap.release()
-    return width, height, duration
+    return width, height, duration, fps
 
 def detect_scenes_ignore_subtitles(video_path, threshold=30.0):
     cap = cv2.VideoCapture(video_path)
@@ -333,183 +380,171 @@ def transcribe_audio_api(video_path):
     except Exception as e:
         return f"Audio Error: {str(e)}"
 
-# --- 5. 大字报生成函数（使用 moviepy，无需 FFmpeg） ---
+# --- 5. 大字报生成函数（使用 OpenCV 逐帧处理） ---
 
-def generate_poster_v1(width, height, line1, line2, line3):
-    """V1 样式：标准居中布局"""
+def generate_poster_image(width, height, line1, line2, line3, style="v1"):
+    """生成大字报 PNG 图层"""
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # 字体大小（根据视频宽度自适应，放大倍数）
-    title_size = max(int(width * 0.09), 60)
-    subtitle_size = max(int(width * 0.05), 36)
-    comment_size = max(int(width * 0.055), 40)
+    # 根据样式设置参数
+    if style == "v1":
+        title_size = max(int(width * 0.09), 60)
+        subtitle_size = max(int(width * 0.05), 36)
+        comment_size = max(int(width * 0.055), 40)
+        margin_top = int(height * 0.05)
+        line_spacing = int(height * 0.025)
+        colors = {
+            "title": (255, 255, 0, 255),
+            "subtitle": (255, 255, 255, 255),
+            "comment": (255, 255, 0, 255),
+        }
+    elif style == "v2":
+        title_size = max(int(width * 0.08), 54)
+        subtitle_size = max(int(width * 0.042), 30)
+        comment_size = max(int(width * 0.048), 34)
+        margin_top = int(height * 0.06)
+        line_spacing = int(height * 0.04)
+        colors = {
+            "title": (255, 220, 0, 255),
+            "subtitle": (200, 200, 200, 255),
+            "comment": (255, 180, 0, 255),
+        }
+    else:  # v3
+        title_size = max(int(width * 0.11), 72)
+        subtitle_size = max(int(width * 0.045), 32)
+        comment_size = max(int(width * 0.06), 44)
+        margin_top = int(height * 0.04)
+        line_spacing = int(height * 0.018)
+        colors = {
+            "title": (255, 255, 50, 255),
+            "subtitle": (255, 255, 255, 255),
+            "comment": (255, 215, 0, 255),
+        }
     
     font_title = get_font(title_size)
     font_subtitle = get_font(subtitle_size)
     font_comment = get_font(comment_size)
     
-    yellow = (255, 255, 0, 255)
-    white = (255, 255, 255, 255)
-    
-    margin_top = int(height * 0.05)
-    line_spacing = int(height * 0.025)
-    
-    # 第1行
+    # 绘制第1行
     bbox1 = draw.textbbox((0, 0), line1, font=font_title)
-    x1 = (width - (bbox1[2] - bbox1[0])) // 2
+    text_width1 = bbox1[2] - bbox1[0]
+    text_height1 = bbox1[3] - bbox1[1]
+    x1 = (width - text_width1) // 2
     y1 = margin_top
-    draw.text((x1, y1), line1, font=font_title, fill=yellow)
+    draw.text((x1, y1), line1, font=font_title, fill=colors["title"])
     
-    # 第2行
+    # 绘制第2行
     bbox2 = draw.textbbox((0, 0), line2, font=font_subtitle)
-    x2 = (width - (bbox2[2] - bbox2[0])) // 2
-    y2 = y1 + (bbox1[3] - bbox1[1]) + line_spacing
-    draw.text((x2, y2), line2, font=font_subtitle, fill=white)
+    text_width2 = bbox2[2] - bbox2[0]
+    text_height2 = bbox2[3] - bbox2[1]
+    x2 = (width - text_width2) // 2
+    y2 = y1 + text_height1 + line_spacing
+    draw.text((x2, y2), line2, font=font_subtitle, fill=colors["subtitle"])
     
-    # 第3行
+    # 绘制第3行
     bbox3 = draw.textbbox((0, 0), line3, font=font_comment)
-    x3 = (width - (bbox3[2] - bbox3[0])) // 2
-    y3 = y2 + (bbox2[3] - bbox2[1]) + line_spacing * 1.5
-    draw.text((x3, y3), line3, font=font_comment, fill=yellow)
+    text_width3 = bbox3[2] - bbox3[0]
+    x3 = (width - text_width3) // 2
+    y3 = y2 + text_height2 + int(line_spacing * 1.5)
+    draw.text((x3, y3), line3, font=font_comment, fill=colors["comment"])
     
     return img
 
-def generate_poster_v2(width, height, line1, line2, line3):
-    """V2 样式：大行距 + 较小字体"""
-    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    
-    title_size = max(int(width * 0.08), 54)
-    subtitle_size = max(int(width * 0.042), 30)
-    comment_size = max(int(width * 0.048), 34)
-    
-    font_title = get_font(title_size)
-    font_subtitle = get_font(subtitle_size)
-    font_comment = get_font(comment_size)
-    
-    yellow = (255, 220, 0, 255)
-    light_gray = (200, 200, 200, 255)
-    orange_yellow = (255, 180, 0, 255)
-    
-    margin_top = int(height * 0.06)
-    line_spacing = int(height * 0.04)
-    
-    bbox1 = draw.textbbox((0, 0), line1, font=font_title)
-    x1 = (width - (bbox1[2] - bbox1[0])) // 2
-    y1 = margin_top
-    draw.text((x1, y1), line1, font=font_title, fill=yellow)
-    
-    bbox2 = draw.textbbox((0, 0), line2, font=font_subtitle)
-    x2 = (width - (bbox2[2] - bbox2[0])) // 2
-    y2 = y1 + (bbox1[3] - bbox1[1]) + line_spacing
-    draw.text((x2, y2), line2, font=font_subtitle, fill=light_gray)
-    
-    bbox3 = draw.textbbox((0, 0), line3, font=font_comment)
-    x3 = (width - (bbox3[2] - bbox3[0])) // 2
-    y3 = y2 + (bbox2[3] - bbox2[1]) + line_spacing * 1.5
-    draw.text((x3, y3), line3, font=font_comment, fill=orange_yellow)
-    
-    return img
-
-def generate_poster_v3(width, height, line1, line2, line3):
-    """V3 样式：超大标题 + 紧凑布局"""
-    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    
-    title_size = max(int(width * 0.11), 72)
-    subtitle_size = max(int(width * 0.045), 32)
-    comment_size = max(int(width * 0.06), 44)
-    
-    font_title = get_font(title_size)
-    font_subtitle = get_font(subtitle_size)
-    font_comment = get_font(comment_size)
-    
-    bright_yellow = (255, 255, 50, 255)
-    white = (255, 255, 255, 255)
-    gold = (255, 215, 0, 255)
-    
-    margin_top = int(height * 0.04)
-    line_spacing = int(height * 0.018)
-    
-    bbox1 = draw.textbbox((0, 0), line1, font=font_title)
-    x1 = (width - (bbox1[2] - bbox1[0])) // 2
-    y1 = margin_top
-    draw.text((x1, y1), line1, font=font_title, fill=bright_yellow)
-    
-    bbox2 = draw.textbbox((0, 0), line2, font=font_subtitle)
-    x2 = (width - (bbox2[2] - bbox2[0])) // 2
-    y2 = y1 + (bbox1[3] - bbox1[1]) + line_spacing
-    draw.text((x2, y2), line2, font=font_subtitle, fill=white)
-    
-    bbox3 = draw.textbbox((0, 0), line3, font=font_comment)
-    x3 = (width - (bbox3[2] - bbox3[0])) // 2
-    y3 = y2 + (bbox2[3] - bbox2[1]) + line_spacing
-    draw.text((x3, y3), line3, font=font_comment, fill=gold)
-    
-    return img
-
-def process_video_with_overlay(video_path, poster_img, mirror=False, high_saturation=False):
+def process_video_opencv(video_path, poster_img, mirror=False, high_saturation=False):
     """
-    使用 moviepy 处理视频：叠加 PNG + 可选镜像/高饱和度
+    使用 OpenCV 逐帧处理视频（无需 FFmpeg 命令行）
     """
     try:
-        # 加载视频
-        video = VideoFileClip(video_path)
+        cap = cv2.VideoCapture(video_path)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps == 0:
+            fps = 30.0
         
-        # 镜像处理
-        if mirror:
-            video = video.fx(lambda clip: clip.fl_image(lambda frame: frame[:, ::-1, :]))
+        # 输出临时文件
+        output_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
-        # 高饱和度处理
-        if high_saturation:
-            def saturate(frame):
-                # 转换到 HSV，增加饱和度
-                hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV).astype(np.float32)
+        # 将 PIL 图像转换为 OpenCV 格式（BGRA）
+        poster_array = np.array(poster_img.convert('RGBA'))
+        poster_bgra = cv2.cvtColor(poster_array, cv2.COLOR_RGBA2BGRA)
+        
+        # 分离 alpha 通道
+        b, g, r, a = cv2.split(poster_bgra)
+        poster_bgr = cv2.merge([b, g, r])
+        alpha = a.astype(float) / 255.0
+        alpha_3ch = cv2.merge([alpha, alpha, alpha])
+        
+        frame_count = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # 镜像处理
+            if mirror:
+                frame = cv2.flip(frame, 1)
+            
+            # 高饱和度处理
+            if high_saturation:
+                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
                 hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.5, 0, 255)  # 饱和度 x1.5
                 hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 1.1, 0, 255)  # 亮度 x1.1
-                return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
-            video = video.fl_image(saturate)
+                frame = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+            
+            # 叠加大字报（alpha 混合）
+            frame = frame.astype(float)
+            blended = frame * (1 - alpha_3ch) + poster_bgr.astype(float) * alpha_3ch
+            frame = blended.astype(np.uint8)
+            
+            out.write(frame)
+            frame_count += 1
         
-        # 将 PIL 图像转换为 numpy 数组
-        poster_array = np.array(poster_img)
+        cap.release()
+        out.release()
         
-        # 创建透明叠加层
-        overlay = ImageClip(poster_array, ismask=False, transparent=True)
-        overlay = overlay.set_duration(video.duration)
-        overlay = overlay.set_position((0, 0))
-        
-        # 合成视频
-        final = CompositeVideoClip([video, overlay])
-        
-        # 输出到临时文件
-        output_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
-        final.write_videofile(
-            output_path, 
-            codec='libx264', 
-            audio_codec='aac',
-            logger=None,
-            fps=video.fps
-        )
-        
-        video.close()
-        final.close()
-        
-        return output_path
+        # 添加音频（使用 moviepy）
+        try:
+            original_video = VideoFileClip(video_path)
+            if original_video.audio is not None:
+                processed_video = VideoFileClip(output_path)
+                final_video = processed_video.set_audio(original_video.audio)
+                
+                final_output = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+                final_video.write_videofile(final_output, codec='libx264', audio_codec='aac', logger=None)
+                
+                original_video.close()
+                processed_video.close()
+                final_video.close()
+                
+                os.remove(output_path)
+                return final_output
+            else:
+                original_video.close()
+                return output_path
+        except Exception as e:
+            st.warning(f"音频处理失败，输出静音视频: {e}")
+            return output_path
+            
     except Exception as e:
         st.error(f"视频处理失败: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         return None
 
 def generate_all_videos(video_path, line1, line2, line3, use_mirror, use_saturation):
     """生成所有版本的视频"""
     results = []
-    width, height, duration = get_video_info(video_path)
+    width, height, duration, fps = get_video_info(video_path)
     
     # 生成三个版本的 PNG
     posters = {
-        "V1": generate_poster_v1(width, height, line1, line2, line3),
-        "V2": generate_poster_v2(width, height, line1, line2, line3),
-        "V3": generate_poster_v3(width, height, line1, line2, line3),
+        "V1": generate_poster_image(width, height, line1, line2, line3, "v1"),
+        "V2": generate_poster_image(width, height, line1, line2, line3, "v2"),
+        "V3": generate_poster_image(width, height, line1, line2, line3, "v3"),
     }
     
     # 确定要处理的效果组合
@@ -523,18 +558,19 @@ def generate_all_videos(video_path, line1, line2, line3, use_mirror, use_saturat
         if use_saturation:
             effect_combinations.append(("高饱和", False, True))
     
-    # 为每个效果组合生成 V1/V2/V3
     total_tasks = len(effect_combinations) * len(posters)
     current_task = 0
     
     progress_bar = st.progress(0)
+    status_text = st.empty()
     
     for effect_name, is_mirror, is_sat in effect_combinations:
         for version, poster_img in posters.items():
             current_task += 1
             progress_bar.progress(current_task / total_tasks)
+            status_text.text(f"正在生成: {effect_name} {version} ({current_task}/{total_tasks})")
             
-            output_path = process_video_with_overlay(
+            output_path = process_video_opencv(
                 video_path, poster_img, 
                 mirror=is_mirror, 
                 high_saturation=is_sat
@@ -548,6 +584,7 @@ def generate_all_videos(video_path, line1, line2, line3, use_mirror, use_saturat
                 results.append((filename, output_path))
     
     progress_bar.empty()
+    status_text.empty()
     return results
 
 # --- 6. 界面渲染 ---
@@ -555,7 +592,7 @@ def generate_all_videos(video_path, line1, line2, line3, use_mirror, use_saturat
 st.markdown("<h1>视听语言分析工作站</h1>", unsafe_allow_html=True)
 st.markdown("<div class='subtitle'>Visual Intelligence Analysis Workstation</div>", unsafe_allow_html=True)
 
-# Tab 导航区（删除了第4个"文字提取"）
+# Tab 导航区
 tab1, tab2, tab3, tab4 = st.tabs(["图生文反推", "视频拆解", "口播扒取", "🔒 大字报生成"])
 
 # === Tab 1: 图生文 ===
@@ -740,14 +777,14 @@ with tab4:
             temp_video.write(poster_video.read())
             poster_video.seek(0)
             
-            width, height, _ = get_video_info(temp_video.name)
+            width, height, _, _ = get_video_info(temp_video.name)
             
             preview_cols = st.columns(3)
             
             posters = [
-                ("V1 标准", generate_poster_v1(width, height, line1, line2, line3)),
-                ("V2 舒朗", generate_poster_v2(width, height, line1, line2, line3)),
-                ("V3 冲击", generate_poster_v3(width, height, line1, line2, line3)),
+                ("V1 标准", generate_poster_image(width, height, line1, line2, line3, "v1")),
+                ("V2 舒朗", generate_poster_image(width, height, line1, line2, line3, "v2")),
+                ("V3 冲击", generate_poster_image(width, height, line1, line2, line3, "v3")),
             ]
             
             bg_frame = get_frame_at_time(temp_video.name, 0.5)
